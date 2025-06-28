@@ -1,0 +1,6 @@
+aiogram==3.3.0
+python-dotenv
+pandas
+openpyxl
+python-decouple
+sqlite3
