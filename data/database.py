@@ -8,7 +8,7 @@ cursor.execute('''
 CREATE TABLE IF NOT EXISTS portions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER,
-    username TEXT,
+    company_name TEXT,
     week TEXT,
     day TEXT,
     time TEXT,

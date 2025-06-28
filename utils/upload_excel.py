@@ -1,6 +1,7 @@
 from celery_app import celery
 from utils.export_excel import generate_user_excel, generate_admin_excel
 import requests
+from slugify import slugify
 import os
 from dotenv import load_dotenv
 
@@ -48,8 +49,8 @@ def publish_file(remote_path: str) -> str:
 
 
 @celery.task
-def generate_upload_and_get_links(user_id: int = None, username: str = None):
-    print(f"[CELERY] Генерация Excel для {username} (user_id={user_id}) началась")
+def generate_upload_and_get_links(user_id: int = None, company_name: str = None):
+    print(f"[CELERY] Генерация Excel для {company_name} (user_id={user_id}) началась")
 
     user_link = None
     admin_link = None
@@ -58,10 +59,12 @@ def generate_upload_and_get_links(user_id: int = None, username: str = None):
     create_folder_if_not_exists("admin")
 
     try:
-        if user_id and username:
+        if user_id and company_name:
             print(f"[CELERY] Генерация user Excel...")
-            user_file = generate_user_excel(user_id, username)  
-            user_remote_path = f"/users/{username or user_id}.xlsx"
+            # Передаём company_name вместо username
+            user_file = generate_user_excel(user_id=user_id, company_name=company_name)  
+            safe_name = slugify(company_name or str(user_id))
+            user_remote_path = f"/users/{safe_name}.xlsx"
             upload_file(user_file, user_remote_path)
             user_link = publish_file(user_remote_path)
             print(f"[CELERY] User файл загружен и опубликован")
@@ -87,4 +90,3 @@ def generate_upload_and_get_links(user_id: int = None, username: str = None):
         "user_link": user_link,
         "admin_link": admin_link
     }
-

@@ -25,25 +25,49 @@ async def start_handler(message: Message, state: FSMContext):
     await message.answer("Добро пожаловать! Пожалуйста, введите код вашей компании для авторизации:")
     await state.set_state(AuthCompanyStates.waiting_for_code)
 
-
-@router.message(AuthCompanyStates.waiting_for_code)
-async def auth_company(message: Message, state: FSMContext):
-    code = message.text.strip()
+@router.message(F.text.startswith('/auth'))
+async def auth_via_command(message: Message, state: FSMContext):
+    try:
+        _, code = message.text.strip().split(maxsplit=1)
+    except ValueError:
+        await message.answer("❌ Использование команды:\n`/auth <код>`", parse_mode="Markdown")
+        return
 
     cursor = conn.cursor()
     cursor.execute("SELECT id FROM companies WHERE code = ?", (code,))
     row = cursor.fetchone()
     if not row:
-        await message.answer("❌ Неверный код компании. Попробуйте ещё раз или введите /start для повторного запроса.")
+        await message.answer("❌ Неверный код компании. Попробуйте снова.")
         return
 
     company_id = row[0]
-    cursor.execute("INSERT OR REPLACE INTO user_company (user_id, company_id) VALUES (?, ?)",
-                   (message.from_user.id, company_id))
+    cursor.execute(
+        "INSERT OR REPLACE INTO user_company (user_id, company_id) VALUES (?, ?)",
+        (message.from_user.id, company_id)
+    )
     conn.commit()
 
-    await message.answer("✅ Авторизация прошла успешно.", reply_markup=main_menu_kb())
-    await state.clear()
+    await message.answer("✅ Авторизация прошла успешно!", reply_markup=main_menu_kb())
+
+
+# @router.message(AuthCompanyStates.waiting_for_code)
+# async def auth_company(message: Message, state: FSMContext):
+#     code = message.text.strip()
+
+#     cursor = conn.cursor()
+#     cursor.execute("SELECT id FROM companies WHERE code = ?", (code,))
+#     row = cursor.fetchone()
+#     if not row:
+#         await message.answer("❌ Неверный код компании. Попробуйте ещё раз или введите /start для повторного запроса.")
+#         return
+
+#     company_id = row[0]
+#     cursor.execute("INSERT OR REPLACE INTO user_company (user_id, company_id) VALUES (?, ?)",
+#                    (message.from_user.id, company_id))
+#     conn.commit()
+
+#     await message.answer("✅ Авторизация прошла успешно.", reply_markup=main_menu_kb())
+#     await state.clear()
 
 
 @router.message(F.text == "ℹ️ Инструкция")
@@ -60,35 +84,6 @@ async def instruction_handler(message: Message):
     )
     await message.answer(text)
 
-
-# @router.message(F.text == "/export_excel")
-# async def export_excel_handler(message: Message, state: FSMContext, bot: Bot):
-#     task = generate_upload_and_get_links.delay(message.from_user.id, message.from_user.username or str(message.from_user.id))
-    
-#     await message.answer("Генерируем и загружаем файл, это займет несколько секунд...")
-#     await state.update_data(task_id=task.id)
-    
-#     # Запускаем фоновую проверку (без await, чтобы не блокировать)
-#     asyncio.create_task(check_task_and_send_result(bot, message.from_user.id, task.id))
-
-
-
-# async def check_task_and_send_result(bot, chat_id, task_id):
-#     for _ in range(20):  # максимум 20 проверок с паузой 1 секунда (около 20 секунд ожидания)
-#         await asyncio.sleep(1)
-#         result = AsyncResult(task_id)
-#         if result.ready():
-#             if result.successful():
-#                 data = result.get()
-#                 user_link = data.get("user_link")
-#                 if user_link:
-#                     await bot.send_message(chat_id, f"Ваш файл готов! Вот ссылка:\n{user_link}")
-#                 else:
-#                     await bot.send_message(chat_id, "Файл с вашими данными не найден.")
-#             else:
-#                 await bot.send_message(chat_id, "Произошла ошибка при генерации файла.")
-#             return
-#     await bot.send_message(chat_id, "Время ожидания истекло. Попробуйте позже.")
 
 #admin
 @router.message(F.text.startswith('/create_company'))
@@ -117,6 +112,30 @@ async def create_company_handler(message: Message):
     await message.answer(f"✅ Компания '{name}' с кодом '{code}' успешно создана.")
 
 
+
+
+@router.message(F.text == "🔗 Ссылка на Я.Диск")
+async def yandex_link_handler(message: Message, state: FSMContext, bot: Bot):
+    # Получаем компанию пользователя из базы
+    cursor = conn.cursor()
+    cursor.execute("SELECT company_name FROM companies "
+                   "JOIN user_company ON companies.id = user_company.company_id "
+                   "WHERE user_company.user_id = ?", (message.from_user.id,))
+    row = cursor.fetchone()
+    if not row:
+        await message.answer("❌ Вы не авторизованы. Введите код компании через /auth <код>.")
+        return
+
+    company_name = row[0]
+    await message.answer("⏳ Генерация файла и загрузка на Яндекс.Диск...")
+
+    task = generate_upload_and_get_links.delay(
+        user_id=message.from_user.id,
+        company_name=company_name
+    )
+    asyncio.create_task(check_task_and_send_result(bot, message.from_user.id, task.id))
+
+
 @router.message(F.text == "/admin_excel")
 async def admin_excel_handler(message: Message, bot: Bot):
     if message.from_user.id not in ADMIN_IDS:
@@ -125,10 +144,8 @@ async def admin_excel_handler(message: Message, bot: Bot):
 
     await message.answer("⏳ Генерируем файл администратора...")
 
-    task = generate_upload_and_get_links.delay(user_id=None, username=None)  
-
+    task = generate_upload_and_get_links.delay()  # без параметров — генерируем админ-файл
     asyncio.create_task(check_admin_excel_result(bot, message.from_user.id, task.id))
-
 
 async def check_admin_excel_result(bot: Bot, chat_id: int, task_id: str):
     for _ in range(20): 
@@ -147,18 +164,6 @@ async def check_admin_excel_result(bot: Bot, chat_id: int, task_id: str):
             return
     await bot.send_message(chat_id, "⏱ Время ожидания истекло. Попробуйте позже.")
 
-
-
-@router.message(F.text == "🔗 Ссылка на Я.Диск")
-async def yandex_link_handler(message: Message, state: FSMContext, bot: Bot):
-    await message.answer("⏳ Генерация файла и загрузка на Яндекс.Диск...")
-
-    task = generate_upload_and_get_links.delay(
-        message.from_user.id,
-        message.from_user.username or str(message.from_user.id)
-    )
-
-    asyncio.create_task(check_task_and_send_result(bot, message.from_user.id, task.id))
 
 
 async def check_task_and_send_result(bot, chat_id, task_id):
