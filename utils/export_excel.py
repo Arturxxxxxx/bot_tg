@@ -10,10 +10,8 @@ from collections import defaultdict
 import calendar
 
 
-def generate_user_excel(user_id: int, company_name: str) -> str:
+def generate_user_excel(user_id: int, company_name: str) -> list[str]:
     safe_name = slugify(company_name or str(user_id))
-    filename = f"exports/user_{safe_name}.xlsx"
-
     os.makedirs("exports", exist_ok=True)
 
     cursor = conn.cursor()
@@ -25,27 +23,30 @@ def generate_user_excel(user_id: int, company_name: str) -> str:
     """, (user_id,))
     rows = cursor.fetchall()
 
-    bold_font = Font(bold=True)
-    header_fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
-    thin_border = Border(
-        left=Side(style="thin"), right=Side(style="thin"),
-        top=Side(style="thin"), bottom=Side(style="thin")
-    )
+    # Группируем по неделям
+    weekly_data = defaultdict(list)
+    for day, time, portion, created_at in rows:
+        dt = datetime.strptime(created_at, "%Y-%m-%d %H:%M:%S")
+        year, week_num, _ = dt.isocalendar()
+        weekly_data[(year, week_num)].append((day, time, portion, created_at))
 
-    row_start = 4
+    saved_files = []
 
-    if os.path.exists(filename):
-        wb = load_workbook(filename)
-        ws = wb.active
-        # Очистка старых данных
-        for row in ws.iter_rows(min_row=5, max_row=ws.max_row):
-            for cell in row:
-                cell.value = None
-    else:
+    for (year, week_num), week_rows in weekly_data.items():
+        filename = f"exports/user_{safe_name}_{year}-W{week_num}.xlsx"
         wb = Workbook()
         ws = wb.active
         ws.title = "Заявки компании"
 
+        # Стили
+        bold_font = Font(bold=True)
+        header_fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
+        thin_border = Border(
+            left=Side(style="thin"), right=Side(style="thin"),
+            top=Side(style="thin"), bottom=Side(style="thin")
+        )
+
+        # Заголовок
         ws.merge_cells("A1:D1")
         ws["A1"].value = "Заявки на питание"
         ws["A1"].font = Font(size=14, bold=True)
@@ -53,15 +54,17 @@ def generate_user_excel(user_id: int, company_name: str) -> str:
         ws["A1"].fill = PatternFill(start_color="BDD7EE", end_color="BDD7EE", fill_type="solid")
         ws["A1"].border = thin_border
 
+        # Компания
         ws.merge_cells("A2:D2")
-        ws["A2"].value = f"Компания: {company_name}"
+        ws["A2"].value = f"Компания: {company_name} — Неделя {year}-W{week_num}"
         ws["A2"].font = Font(size=12, bold=True)
         ws["A2"].alignment = Alignment(horizontal="left", vertical="center")
         ws["A2"].border = thin_border
 
+        # Шапка таблицы
         headers = ["День", "Время", "Порции", "Дата заявки"]
         for col, header in enumerate(headers, start=1):
-            cell = ws.cell(row=row_start, column=col)
+            cell = ws.cell(row=4, column=col)
             cell.value = header
             cell.font = bold_font
             cell.alignment = Alignment(horizontal="center", vertical="center")
@@ -72,32 +75,35 @@ def generate_user_excel(user_id: int, company_name: str) -> str:
         for col, width in col_widths.items():
             ws.column_dimensions[get_column_letter(col)].width = width
 
-    portion_map = {}
+        # Заполнение данных
+        portion_map = {}
+        row_index = 5
 
-    for i, row in enumerate(rows, start=row_start + 1):
-        day, time, portion, created_at = row
-        key = f"{day}|{time}"
+        for day, time, portion, created_at in week_rows:
+            key = f"{day}|{time}"
+            portion_display = str(portion)
 
-        portion_display = str(portion)
-        if key in portion_map:
-            prev = portion_map[key]
-            diff = portion - prev
-            if diff > 0:
-                portion_display = f"{portion} (+{diff})"
-            elif diff < 0:
-                portion_display = f"{portion} ({diff})"
+            if key in portion_map:
+                prev = portion_map[key]
+                diff = portion - prev
+                if diff > 0:
+                    portion_display = f"{portion} (+{diff})"
+                elif diff < 0:
+                    portion_display = f"{portion} ({diff})"
+            portion_map[key] = portion
 
-        portion_map[key] = portion
+            row_values = [day, time, portion_display, created_at]
+            for j, value in enumerate(row_values, start=1):
+                cell = ws.cell(row=row_index, column=j)
+                cell.value = value
+                cell.alignment = Alignment(horizontal="center", vertical="center")
+                cell.border = thin_border
+            row_index += 1
 
-        row_values = [day, time, portion_display, created_at]
-        for j, value in enumerate(row_values, start=1):
-            cell = ws.cell(row=i, column=j)
-            cell.value = value
-            cell.alignment = Alignment(horizontal="center", vertical="center")
-            cell.border = thin_border
+        wb.save(filename)
+        saved_files.append(filename)
 
-    wb.save(filename)
-    return filename
+    return saved_files
 
 
 def generate_admin_excel() -> str:
