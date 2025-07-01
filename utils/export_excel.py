@@ -109,87 +109,103 @@ def _week_range(any_date: date) -> tuple[date, date]:
     return start, start + timedelta(days=6)
 
 
-def generate_admin_excel(year: int, week_num: int) -> str:
-    """Генерирует Excel‑файл с заявками за ISO‑неделю year‑Wweek_num."""
-    monday = datetime.fromisocalendar(year, week_num, 1).date()
-    sunday = monday + timedelta(days=6)
-
-    file_name = f"admin_orders_{year}-W{week_num:02d}.xlsx"
-    file_path = os.path.join("exports", file_name)
+def generate_admin_excel(year: int, week: int) -> str:
+    # 🗂 Создание имени файла
+    filename = f"exports/admin_orders_{year}-W{week}.xlsx"
     os.makedirs("exports", exist_ok=True)
 
-    # ---- читаем БД ---------------------------------------------------------
+    # 🎯 Вычисляем даты начала и конца недели
+    monday = datetime.strptime(f'{year}-W{week}-1', "%Y-W%W-%w").date()
+    week_dates = [(monday + timedelta(days=i)) for i in range(7)]
+
+    # 📥 Получение данных из базы
     cursor = conn.cursor()
-    cursor.execute(
-        """
-        SELECT company_name, DATE(created_at) as d, time, portion, created_at
+    cursor.execute("""
+        SELECT company_name, day, time, portion, created_at
         FROM portions
-        WHERE DATE(created_at) BETWEEN ? AND ?
-        ORDER BY company_name, created_at
-        """,
-        (monday.isoformat(), sunday.isoformat()),
-    )
+        ORDER BY created_at ASC
+    """)
     rows = cursor.fetchall()
 
-    # company → {(day, time): (portion, created_at)}
-    data = defaultdict(dict)
-    for comp, d, t, p, created in rows:
-        data[comp][(d, t.capitalize())] = (p, created)
+    # 📊 Группируем по дате и компании
+    grouped = defaultdict(lambda: defaultdict(lambda: {"День": 0, "Ночь": 0, "Запайка": 0}))
 
-    # ---- создаём Excel -----------------------------------------------------
+    for company_name, _, time, portion, created_at in rows:
+        created_date = created_at[:10]
+        created_dt = datetime.strptime(created_date, "%Y-%m-%d").date()
+        if created_dt in week_dates:
+            time_key = time.capitalize()
+            if time_key in grouped[created_dt][company_name]:
+                grouped[created_dt][company_name][time_key] += portion
+
+    # ✍️ Начинаем писать Excel
     wb = Workbook()
     ws = wb.active
-    ws.title = f"W{week_num:02d}"
+    ws.title = f"Неделя {week}"
 
-    title_fill  = PatternFill("solid", start_color="BDD7EE")
-    header_fill = PatternFill("solid", start_color="D9E1F2")
-    border = Border(*(Side("thin"),) * 4)
-    bold = Font(bold=True)
+    current_row = 1
+    bold_font = Font(bold=True)
+    header_fill = PatternFill(start_color="D9E1F2", end_color="D9E1F2", fill_type="solid")
+    thin_border = Border(
+        left=Side(style="thin"), right=Side(style="thin"),
+        top=Side(style="thin"), bottom=Side(style="thin")
+    )
 
-    ws.merge_cells("A1:G1")
-    ws["A1"].value = f"Календарь заявок {year}-W{week_num:02d} ({monday:%d.%m}–{sunday:%d.%m})"
-    ws["A1"].font, ws["A1"].alignment, ws["A1"].fill = Font(size=14, bold=True), Alignment(horizontal="center"), title_fill
-    ws["A1"].border = border
+    for day_date in week_dates:
+        companies = grouped.get(day_date, {})
+        if not companies:
+            # Если данных нет, всё равно создаём пустую таблицу
+            companies = {}
 
-    headers = ["Компания", "Дата", "День", "Ночь", "Запайка", "Итого"]
-    ws.append(headers)
-    for c in ws[2]:
-        c.font, c.alignment, c.fill, c.border = bold, Alignment(horizontal="center"), header_fill, border
+        # 🟦 Заголовок дня
+        ws.merge_cells(start_row=current_row, start_column=1, end_row=current_row, end_column=6)
+        cell = ws.cell(row=current_row, column=1)
+        cell.value = f"Дата: {day_date.strftime('%d.%m.%Y')} ({day_date.strftime('%A')})"
+        cell.font = Font(size=12, bold=True, color="FFFFFF")
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+        cell.fill = PatternFill(start_color="4F81BD", end_color="4F81BD", fill_type="solid")
+        cell.border = thin_border
+        current_row += 1
 
-    times = ["День", "Ночь", "Запайка"]
-    cur_row = 3
+        # 🏷 Шапка
+        headers = ["Компания", "День", "Ночь", "Запайка", "Итого порций"]
+        for col, header in enumerate(headers, start=1):
+            cell = ws.cell(row=current_row, column=col)
+            cell.value = header
+            cell.font = bold_font
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.fill = header_fill
+            cell.border = thin_border
+        current_row += 1
 
-    for company, recs in data.items():
-        for i in range(7):
-            d = monday + timedelta(days=i)
-            d_str = d.isoformat()
+        # 📄 Заполнение компаний
+        if companies:
+            for company, values in companies.items():
+                day_p = values["День"]
+                night_p = values["Ночь"]
+                zap_p = values["Запайка"]
+                total = day_p + night_p + zap_p
+                row = [company, day_p, night_p, zap_p, total]
+                for col, val in enumerate(row, start=1):
+                    cell = ws.cell(row=current_row, column=col)
+                    cell.value = val
+                    cell.alignment = Alignment(horizontal="center", vertical="center")
+                    cell.border = thin_border
+                current_row += 1
+        else:
+            # 🟨 Пустая строка если данных нет
+            cell = ws.cell(row=current_row, column=1)
+            cell.value = "Нет заявок"
+            cell.alignment = Alignment(horizontal="center", vertical="center")
+            cell.border = thin_border
+            current_row += 1
 
-            portions = []
-            created_at = "—"
-            for t in times:
-                portion, created = recs.get((d_str, t), (0, "—"))
-                portions.append(portion)
-                if created_at == "—" and created != "—":
-                    created_at = created
+        current_row += 1  # пустая строка между днями
 
-            total = sum(portions)
-            row = [company, d_str, *portions, total]
-            ws.append(row)
-
-            for j, val in enumerate(row, start=1):
-                cell = ws.cell(row=cur_row, column=j)
-                cell.alignment = Alignment(horizontal="center")
-                cell.border = border
-            cur_row += 1
-
-        # пустая строка‑разделитель между компаниями
-        ws.append([])
-        cur_row += 1
-
-    # авто‑ширина
+    # 📏 Автоширина
     for col in ws.columns:
-        length = max(len(str(c.value)) if c.value else 0 for c in col)
-        ws.column_dimensions[get_column_letter(col[0].column)].width = length + 2
+        max_len = max(len(str(cell.value)) if cell.value else 0 for cell in col)
+        ws.column_dimensions[get_column_letter(col[0].column)].width = max_len + 2
 
-    wb.save(file_path)
-    return file_path
+    wb.save(filename)
+    return filename
