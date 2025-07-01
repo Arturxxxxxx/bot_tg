@@ -4,6 +4,7 @@ import requests
 from slugify import slugify
 import os
 from dotenv import load_dotenv
+from datetime import date
 
 load_dotenv()
 
@@ -59,31 +60,35 @@ def generate_upload_and_get_links(user_id: int = None, company_name: str = None)
     create_folder_if_not_exists("admin")
 
     try:
+        # --- Генерация Excel-файла пользователя ---
         if user_id and company_name:
             print(f"[CELERY] Генерация user Excel...")
-            # Передаём company_name вместо username
-            user_file = generate_user_excel(user_id=user_id, company_name=company_name)  
+            user_file = generate_user_excel(user_id=user_id, company_name=company_name)
             safe_name = slugify(company_name or str(user_id))
             user_remote_path = f"/users/{safe_name}.xlsx"
             upload_file(user_file, user_remote_path)
             user_link = publish_file(user_remote_path)
             print(f"[CELERY] User файл загружен и опубликован")
 
-        print(f"[CELERY] Генерация admin Excel...")
-        admin_file = generate_admin_excel() 
-        admin_remote_path = "/admin/admin_orders.xlsx"
+        # --- Генерация Excel-файла для недели ---
+        print(f"[CELERY] Генерация admin Excel по неделе...")
+        today = date.today()
+        year, week, _ = today.isocalendar()
+        admin_file = generate_admin_excel(year, week)
+        admin_filename = os.path.basename(admin_file)
+        admin_remote_path = f"/admin/{admin_filename}"
         upload_file(admin_file, admin_remote_path)
         admin_link = publish_file(admin_remote_path)
-        print(f"[CELERY] Admin файл загружен и опубликован")
+        print(f"[CELERY] Admin файл '{admin_filename}' загружен и опубликован")
 
     except Exception as e:
         print(f"[CELERY ERROR] {e}")
         raise e
 
     finally:
-        if 'user_file' in locals() and os.path.exists(user_file):
+        if 'user_file' in locals() and user_file and os.path.exists(user_file):
             os.remove(user_file)
-        if 'admin_file' in locals() and os.path.exists(admin_file):
+        if 'admin_file' in locals() and admin_file and os.path.exists(admin_file):
             os.remove(admin_file)
 
     return {

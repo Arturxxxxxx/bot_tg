@@ -112,6 +112,42 @@ async def create_company_handler(message: Message):
     await message.answer(f"✅ Компания '{name}' с кодом '{code}' успешно создана.")
 
 
+# 📋 Получить список компаний
+@router.message(F.text.startswith("/companies"))
+async def list_companies(message: types.Message):
+    cursor = conn.cursor()
+    cursor.execute("SELECT DISTINCT company_name FROM portions ORDER BY company_name")
+    companies = [row[0] for row in cursor.fetchall()]
+    
+    if not companies:
+        await message.answer("❌ Нет зарегистрированных компаний.")
+        return
+
+    companies_list = "\n".join(f"• {c}" for c in companies)
+    await message.answer(f"📦 Список компаний:\n\n{companies_list}")
+
+# ❌ Удалить компанию
+@router.message(F.text.startswith("/delete_company"))
+async def delete_company(message: types.Message):
+    parts = message.text.strip().split(maxsplit=1)
+    if len(parts) < 2:
+        await message.answer("⚠️ Укажите название компании: `/delete_company Название_Компании`", parse_mode="Markdown")
+        return
+
+    company_name = parts[1]
+
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM portions WHERE company_name = ?", (company_name,))
+    count = cursor.fetchone()[0]
+
+    if count == 0:
+        await message.answer(f"❌ Компания с названием `{company_name}` не найдена.", parse_mode="Markdown")
+        return
+
+    cursor.execute("DELETE FROM portions WHERE company_name = ?", (company_name,))
+    conn.commit()
+    await message.answer(f"✅ Компания `{company_name}` и её {count} заявок удалены.", parse_mode="Markdown")
+
 
 
 @router.message(F.text == "🔗 Ссылка на Я.Диск")
