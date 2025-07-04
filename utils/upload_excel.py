@@ -4,7 +4,7 @@ import requests
 from slugify import slugify
 import os
 from dotenv import load_dotenv
-from datetime import date
+from datetime import date, timedelta, datetime
 
 load_dotenv()
 
@@ -49,49 +49,52 @@ def publish_file(remote_path: str) -> str:
     return public_url
 
 
-@celery.task
-def generate_upload_and_get_links(user_id: int = None, company_name: str = None):
-    print(f"[CELERY] Генерация Excel для {company_name} (user_id={user_id}) началась")
+def _week_bounds(year: int, week: int) -> tuple[date, date]:
+    monday = datetime.fromisocalendar(year, week, 1).date()
+    return monday, monday + timedelta(days=6)
 
-    user_link = None
+@celery.task
+def generate_upload_and_get_links(
+        *,
+        user_id: int | None = None,
+        company_name: str | None = None,
+        year: int | None = None,
+        week_num: int | None = None,
+):
+    """Генерирует и выгружает отчёты.  
+       Если year/week_num не переданы → используется текущая неделя."""
+    if year is None or week_num is None:
+        today = date.today()
+        year, week_num, _ = today.isocalendar()
+
+    monday, sunday = _week_bounds(year, week_num)
+    print(f"[CELERY] building reports for {year}-W{week_num:02d} ({monday}…{sunday})")
+
+    user_link  = None
     admin_link = None
 
     create_folder_if_not_exists("users")
     create_folder_if_not_exists("admin")
 
     try:
-        # --- Генерация Excel-файла пользователя ---
+        # ─────────────────────  USER  ─────────────────────
         if user_id and company_name:
-            print(f"[CELERY] Генерация user Excel...")
-            user_file = generate_user_excel(user_id=user_id, company_name=company_name)
-            safe_name = slugify(company_name or str(user_id))
-            user_remote_path = f"/users/{safe_name}.xlsx"
-            upload_file(user_file, user_remote_path)
-            user_link = publish_file(user_remote_path)
-            print(f"[CELERY] User файл загружен и опубликован")
+            user_file = generate_user_excel(user_id, company_name, monday)
+            safe = slugify(company_name or str(user_id))
+            user_remote = f"users/{safe}_{year}-W{week_num:02d}.xlsx"
+            upload_file(user_file, user_remote)
+            user_link = publish_file(user_remote)
+            os.remove(user_file)
 
-        # --- Генерация Excel-файла для недели ---
-        print(f"[CELERY] Генерация admin Excel по неделе...")
-        today = date.today()
-        year, week, _ = today.isocalendar()
-        admin_file = generate_admin_excel(year, week)
-        admin_filename = os.path.basename(admin_file)
-        admin_remote_path = f"/admin/{admin_filename}"
-        upload_file(admin_file, admin_remote_path)
-        admin_link = publish_file(admin_remote_path)
-        print(f"[CELERY] Admin файл '{admin_filename}' загружен и опубликован")
+        # ───────────────────── ADMIN ─────────────────────
+        admin_file   = generate_admin_excel(year, week_num)
+        admin_remote = f"admin/admin_orders_{year}-W{week_num:02d}.xlsx"
+        upload_file(admin_file, admin_remote)
+        admin_link = publish_file(admin_remote)
+        os.remove(admin_file)
 
     except Exception as e:
         print(f"[CELERY ERROR] {e}")
-        raise e
+        raise
 
-    finally:
-        if 'user_file' in locals() and user_file and os.path.exists(user_file):
-            os.remove(user_file)
-        if 'admin_file' in locals() and admin_file and os.path.exists(admin_file):
-            os.remove(admin_file)
-
-    return {
-        "user_link": user_link,
-        "admin_link": admin_link
-    }
+    return {"user_link": user_link, "admin_link": admin_link}

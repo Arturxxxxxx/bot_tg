@@ -2,14 +2,14 @@ from keybords.day_select import day_select_keyboard
 from keybords.time_select import time_select_keyboard
 from keybords.main_kb import main_menu_kb
 from aiogram import Router, F, Bot
-from aiogram.types import Message, KeyboardButton, ReplyKeyboardMarkup
+from aiogram.types import Message, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from aiogram.fsm.context import FSMContext
 from datetime import datetime
 from celery.result import AsyncResult
 from states.load_states import LoadDataStates
 from utils.upload_excel import generate_upload_and_get_links
 from data.database import conn
-from datetime import datetime, time
+from datetime import datetime, time, timedelta, date
 import asyncio
 import logging
 
@@ -33,29 +33,38 @@ def week_select_keyboard():
 
 
 
-def get_available_days(week: str) -> list:
-    today = datetime.today()
-    weekday_index = today.weekday()  # 0 = Monday, 6 = Sunday
+def get_available_day_options(week: str) -> list[tuple[str, str]]:
+    """
+    Возвращает список доступных дней в виде кортежей:
+    (название дня недели, ISO-дата этого дня)
+    """
+    today = datetime.now()
+    weekday_index = today.weekday()  # 0 = Monday
+    noon = time(12, 0)
 
-    # Время отсечки — 12:00 (полдень)
-    noon = time(12, 0, 0)
-
-    # Если выбираем текущую неделю
-    if week == "current":
-        # Если сейчас после 12:00, пропускаем сегодня
-        if today.time() >= noon:
-            # Начинаем с завтрашнего дня
-            start_index = (weekday_index + 1) % 7
-        else:
-            # Сегодня ещё можно выбирать
-            start_index = weekday_index
-
-        # Возвращаем срез дней недели, начиная с start_index
-        # и до конца недели (воскресенье включительно)
-        return DAYS_FULL[start_index:]
+    # Понедельник выбранной недели
+    if week == "next":
+        monday = today.date() + timedelta(days=7 - weekday_index)
     else:
-        # Для следующей недели показываем все дни
-        return DAYS_FULL
+        monday = today.date() - timedelta(days=weekday_index)
+
+    days = []
+    for i in range(7):
+        current_day = monday + timedelta(days=i)
+        is_today = current_day == today.date()
+
+        # Правило для текущей недели — после 12:00, сегодня не предлагать
+        if week == "current":
+            if is_today and today.time() >= noon:
+                continue
+            if current_day < today.date():
+                continue
+
+        day_name = DAYS_FULL[i]
+        iso_date = current_day.isoformat()
+        days.append((day_name, iso_date))
+
+    return days
 
 
 @router.message(F.text == "📥 Загрузить данные")
@@ -95,10 +104,15 @@ async def choose_week(message: Message, state: FSMContext):
     week_key = "current" if message.text == CURRENT_WEEK else "next"
     await state.update_data(week=week_key)
 
-    available_days = get_available_days(week_key)
-    keyboard = day_select_keyboard(available_days)
+    day_options = get_available_day_options(week_key)
+    keyboard = day_select_keyboard(day_options)
+
+    # Сохраняем список допустимых дней в FSMContext
+    await state.update_data(day_options=day_options)
+
     await message.answer("Выберите день недели:", reply_markup=keyboard)
     await state.set_state(LoadDataStates.choosing_day)
+
 
 
 
@@ -106,9 +120,10 @@ async def choose_week(message: Message, state: FSMContext):
 async def choose_day(message: Message, state: FSMContext):
     data = await state.get_data()
     week = data.get("week", "current")
-    valid_days = get_available_days(week) + [BACK_BUTTON]
+    day_options = data.get("day_options", [])
+    valid_day_names = [d[0] for d in day_options] + [BACK_BUTTON]
 
-    if message.text not in valid_days:
+    if message.text not in valid_day_names:
         await message.answer("Пожалуйста, выберите день недели, используя кнопки.")
         return
 
@@ -117,94 +132,143 @@ async def choose_day(message: Message, state: FSMContext):
         await state.set_state(LoadDataStates.choosing_week)
         return
 
-    await state.update_data(day=message.text)
-    await message.answer("Введите количество порций (только число):")
+    # Получаем iso-дату по названию дня
+    day_name = message.text
+    day_date = next((date for name, date in day_options if name == day_name), None)
+
+    if not day_date:
+        await message.answer("Ошибка: не удалось определить дату выбранного дня.")
+        return
+
+    await state.update_data(day=day_name, day_date=day_date)
+
+    await message.answer(
+        "Введите количество порций (только число):",
+        reply_markup=ReplyKeyboardRemove()
+    )
     await state.set_state(LoadDataStates.entering_portion)
+
 
 
 
 @router.message(LoadDataStates.entering_portion)
 async def enter_portion(message: Message, state: FSMContext, bot: Bot):
+    # ----- отмена --------------------------------------------------------
     if message.text == BACK_BUTTON:
-        data = await state.get_data()
-        week = data.get("week", "current")
-        keyboard = day_select_keyboard(get_available_days(week))
-        await message.answer("Выберите день недели:", reply_markup=keyboard)
+        d = await state.get_data()
+        week_key = d.get("week", "current")
+        days_kb = day_select_keyboard(
+            [name for name, _ in get_available_day_options(week_key)]
+        )
+        await message.answer("Выберите день недели:", reply_markup=days_kb)
         await state.set_state(LoadDataStates.choosing_day)
         return
 
+    # ----- валидация числа ----------------------------------------------
     if not message.text.isdigit():
-        await message.answer("Введите только число или нажмите 🔙 для отмены.")
+        await message.answer("Введите только число или нажмите 🔙 Назад.")
         return
-
     portion = int(message.text)
+
+    # ----- данные из FSM --------------------------------------------------
     data = await state.get_data()
-    day, time, week = data['day'], data['time'], data.get('week', 'current')
-    user_id = message.from_user.id
+    day_iso   = data["day_date"]      # '2025‑07‑09'
+    time_slot = data["time"]          # День | Ночь | Запайка
+    week_key  = data.get("week", "current")
+    user_id   = message.from_user.id
 
-    # Получаем company_name по user_id
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT c.name FROM companies c
-        JOIN user_company uc ON uc.company_id = c.id
-        WHERE uc.user_id = ?
+    # понедельник «целевой» недели
+    sel_dt          = datetime.fromisoformat(day_iso).date()
+    monday_of_week  = sel_dt - timedelta(days=sel_dt.weekday())
+
+    # ----- компания пользователя -----------------------------------------
+    cur = conn.cursor()
+    cur.execute("""
+        SELECT c.name
+        FROM   companies c
+        JOIN   user_company uc ON uc.company_id = c.id
+        WHERE  uc.user_id = ?
     """, (user_id,))
-    row = cursor.fetchone()
-
+    row = cur.fetchone()
     if not row:
-        await message.answer("❌ Не удалось определить вашу компанию. Обратитесь к администратору.")
+        await message.answer("❌ Не удалось определить вашу компанию.")
         return
-
     company_name = row[0]
 
+    # ----- запись / обновление -------------------------------------------
     try:
-        cursor.execute("""
-            SELECT id, portion FROM portions
-            WHERE user_id = ? AND week = ? AND day = ? AND time = ?
-        """, (user_id, week, day, time))
-        existing = cursor.fetchone()
+        cur.execute("""
+            SELECT id, portion
+            FROM   portions
+            WHERE  user_id=? AND day=? AND time=?
+        """, (user_id, day_iso, time_slot))
+        existing = cur.fetchone()
 
-        portion_diff_str = ""
+        diff_note = ""
+        now_str   = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        NOTIFY_CHAT_ID = -4978614010  # ← сюда вставь ID группы/чата для уведомлений
+
         if existing:
-            portion_id, old_portion = existing
-            diff = portion - old_portion
-            if diff > 0:
-                portion_diff_str = f" (⏫ +{diff})"
-            elif diff < 0:
-                portion_diff_str = f" (⏬ {diff})"
-            cursor.execute("""
-                UPDATE portions SET portion = ?, created_at = ?
-                WHERE id = ?
-            """, (portion, datetime.now().strftime('%Y-%m-%d %H:%M:%S'), portion_id))
+            pid, prev = existing
+            diff = portion - prev
+            diff_note = f" (⏫ +{diff})" if diff > 0 else f" (⏬ {diff})" if diff < 0 else ""
+
+            cur.execute(
+                "UPDATE portions SET portion=?, created_at=? WHERE id=?",
+                (portion, now_str, pid)
+            )
+
+            if diff != 0:
+                # Формируем уведомление об изменении
+                msg = (
+                    f"🔄 Изменение порций\n"
+                    f"👤 Пользователь: {message.from_user.full_name} (@{message.from_user.username})\n"
+                    f"🏢 Компания: {company_name}\n"
+                    f"📅 {day_iso} | 🕒 {time_slot}\n"
+                    f"🍽 Было: {prev} → Стало: {portion}"
+                )
+                try:
+                    await bot.send_message(NOTIFY_CHAT_ID, msg)
+                except Exception:
+                    logging.exception("Не удалось отправить уведомление об изменении порций")
+
         else:
-            cursor.execute("""
-                INSERT INTO portions (user_id, company_name, day, time, portion, created_at, week)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-            """, (
-                user_id,
-                company_name,
-                day,
-                time,
-                portion,
-                datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                week
-            ))
+            cur.execute("""
+                INSERT INTO portions
+                (user_id, company_name, day, time, portion,
+                 created_at, week_monday, week_key)
+                VALUES (?,?,?,?,?,?,?,?)
+            """, (user_id, company_name, day_iso, time_slot,
+                  portion, now_str, monday_of_week.isoformat(), week_key))
         conn.commit()
     except Exception:
         logging.exception("Ошибка при работе с БД")
         await message.answer("Произошла ошибка при сохранении данных.")
         return
 
-    task = generate_upload_and_get_links.delay(user_id, company_name)
+    # ----- создаём отчёты -------------------------------------------------
+    # вычисляем ISO‑год и номер недели выбранной даты
+    year, week_num, _ = sel_dt.isocalendar()
+
+    task = generate_upload_and_get_links.delay(
+        user_id=user_id,
+        company_name=company_name,
+        year=year,
+        week_num=week_num          # ← передаём!
+    )
     asyncio.create_task(check_task_and_send_result(bot, user_id, task.id))
 
+    # ----- ответ пользователю --------------------------------------------
+    week_label = "эта" if week_key == "current" else "следующая"
     await message.answer(
         f"✅ Данные обновлены:\n"
-        f"📅 {day} | 🕒 {time} | 🗓 Неделя: {'эта' if week == 'current' else 'следующая'}\n"
-        f"🍽️ {portion} порций{portion_diff_str}",
+        f"📅 {day_iso} | 🕒 {time_slot} | 🗓 Неделя: {week_label}\n"
+        f"🍽 {portion} порций{diff_note}",
         reply_markup=main_menu_kb()
     )
     await state.clear()
+
 
 
 async def check_task_and_send_result(bot: Bot, chat_id: int, task_id: str):

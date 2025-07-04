@@ -7,8 +7,11 @@ from handlers import start, load_data, feedback
 from decouple import config
 from widdlewares.company_auth import CompanyAuthMiddleware
 
+
+
 async def main():
     logging.basicConfig(level=logging.INFO)
+
 
     bot = Bot(token=config('TOKEN'))
     dp = Dispatcher(storage=MemoryStorage())

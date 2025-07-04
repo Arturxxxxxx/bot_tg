@@ -1,0 +1,5 @@
+-- database: ./data.db
+
+SELECT * FROM portions;
+ALTER TABLE portions ADD COLUMN week_monday TEXT;
+ALTER TABLE portions ADD COLUMN week_key TEXT;

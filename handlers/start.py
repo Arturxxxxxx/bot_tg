@@ -16,6 +16,12 @@ router = Router()
 ADMIN_IDS = [5469335222, 5459748606]
  
 
+# @router.message()
+# async def get_chat_id(message: types.Message):
+#     chat_id = message.chat.id
+#     await message.reply(f"ID этого чата: {chat_id}")
+
+
 @router.message(F.text == '/start')
 async def start_handler(message: Message, state: FSMContext):
     if message.from_user.id in ADMIN_IDS:
