@@ -122,7 +122,7 @@ async def create_company_handler(message: Message):
 @router.message(F.text.startswith("/companies"))
 async def list_companies(message: types.Message):
     cursor = conn.cursor()
-    cursor.execute("SELECT DISTINCT company_name FROM portions ORDER BY company_name")
+    cursor.execute("SELECT DISTINCT name FROM companies ORDER BY name")
     companies = [row[0] for row in cursor.fetchall()]
     
     if not companies:
