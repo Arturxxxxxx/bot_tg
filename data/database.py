@@ -13,7 +13,9 @@ CREATE TABLE IF NOT EXISTS portions (
     day TEXT,
     time TEXT,
     portion INTEGER,
-    created_at TEXT
+    created_at TEXT,
+    week_monday  TEXT,     
+    week_key     TEXT   
 )
 ''')
 cursor.execute("CREATE INDEX IF NOT EXISTS idx_portions_user_id ON portions(user_id);")

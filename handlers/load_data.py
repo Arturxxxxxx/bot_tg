@@ -53,12 +53,11 @@ def get_available_day_options(week: str) -> list[tuple[str, str]]:
         current_day = monday + timedelta(days=i)
         is_today = current_day == today.date()
 
-        # Правило для текущей недели — после 12:00, сегодня не предлагать
         if week == "current":
-            if is_today and today.time() >= noon:
-                continue
-            if current_day < today.date():
-                continue
+            if current_day <= today.date():
+                continue  # Пропускаем сегодня и все предыдущие
+            if today.time() >= noon and current_day == today.date() + timedelta(days=1):
+                continue  # После 12:00 — пропускаем и завтра
 
         day_name = DAYS_FULL[i]
         iso_date = current_day.isoformat()
@@ -191,7 +190,7 @@ async def enter_portion(message: Message, state: FSMContext, bot: Bot):
     """, (user_id,))
     row = cur.fetchone()
     if not row:
-        await message.answer("❌ Не удалось определить вашу компанию.")
+        await message.answer("❌ Не удалось определить вашу компанию.", reply_markup=main_menu_kb())
         return
     company_name = row[0]
 
@@ -268,7 +267,6 @@ async def enter_portion(message: Message, state: FSMContext, bot: Bot):
         reply_markup=main_menu_kb()
     )
     await state.clear()
-
 
 
 async def check_task_and_send_result(bot: Bot, chat_id: int, task_id: str):

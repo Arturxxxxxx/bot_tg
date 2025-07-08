@@ -8,7 +8,8 @@ from datetime import date, timedelta, datetime
 
 load_dotenv()
 
-TOKEN = os.getenv("YANDEX_TOKEN")
+TOKEN = os.getenv("YANDEX_TOK")
+print(TOKEN)
 HEADERS = {"Authorization": f"OAuth {TOKEN}"}
 
 def create_folder_if_not_exists(folder_path: str):

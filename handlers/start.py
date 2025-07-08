@@ -22,6 +22,7 @@ ADMIN_IDS = [5469335222, 5459748606]
 #     await message.reply(f"ID этого чата: {chat_id}")
 
 
+
 @router.message(F.text == '/start')
 async def start_handler(message: Message, state: FSMContext):
     if message.from_user.id in ADMIN_IDS:
@@ -30,6 +31,11 @@ async def start_handler(message: Message, state: FSMContext):
 
     await message.answer("Добро пожаловать! Пожалуйста, введите код вашей компании для авторизации:")
     await state.set_state(AuthCompanyStates.waiting_for_code)
+
+@router.message(F.text == "/cancel")
+async def cancel(msg: Message, state: FSMContext):
+    await state.clear()
+    await msg.answer("❌ Отменено.", reply_markup=main_menu_kb())
 
 @router.message(F.text.startswith('/auth'))
 async def auth_via_command(message: Message, state: FSMContext):
@@ -143,14 +149,14 @@ async def delete_company(message: types.Message):
     company_name = parts[1]
 
     cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM portions WHERE company_name = ?", (company_name,))
+    cursor.execute("SELECT COUNT(*) FROM companies WHERE name = ?", (company_name,))
     count = cursor.fetchone()[0]
 
     if count == 0:
         await message.answer(f"❌ Компания с названием `{company_name}` не найдена.", parse_mode="Markdown")
         return
 
-    cursor.execute("DELETE FROM portions WHERE company_name = ?", (company_name,))
+    cursor.execute("DELETE FROM companies WHERE name = ?", (company_name,))
     conn.commit()
     await message.answer(f"✅ Компания `{company_name}` и её {count} заявок удалены.", parse_mode="Markdown")
 
@@ -160,7 +166,7 @@ async def delete_company(message: types.Message):
 async def yandex_link_handler(message: Message, state: FSMContext, bot: Bot):
     # Получаем компанию пользователя из базы
     cursor = conn.cursor()
-    cursor.execute("SELECT company_name FROM companies "
+    cursor.execute("SELECT name FROM companies "
                    "JOIN user_company ON companies.id = user_company.company_id "
                    "WHERE user_company.user_id = ?", (message.from_user.id,))
     row = cursor.fetchone()
