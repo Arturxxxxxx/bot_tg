@@ -165,7 +165,7 @@ async def enter_portion(message: Message, state: FSMContext, bot: Bot):
 
     # ----- валидация числа ----------------------------------------------
     if not message.text.isdigit():
-        await message.answer("Введите только число или нажмите 🔙 Назад.")
+        await message.answer("Введите только число или нажмите /cancel.")
         return
     portion = int(message.text)
 
