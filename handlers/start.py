@@ -7,10 +7,9 @@ from celery.result import AsyncResult
 from states.load_states import AuthCompanyStates
 
 from keybords.main_kb import main_menu_kb
-from utils.upload_excel import generate_upload_and_get_links
+from utils.upload_excel import generate_upload_and_get_links, list_admin_weeks, get_yadisk_public_url
 from data.database import conn
-
-
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
 router = Router()
 
 ADMIN_IDS = [5469335222, 5459748606]
@@ -60,26 +59,6 @@ async def auth_via_command(message: Message, state: FSMContext):
     conn.commit()
 
     await message.answer("✅ Авторизация прошла успешно!", reply_markup=main_menu_kb())
-
-
-# @router.message(AuthCompanyStates.waiting_for_code)
-# async def auth_company(message: Message, state: FSMContext):
-#     code = message.text.strip()
-
-#     cursor = conn.cursor()
-#     cursor.execute("SELECT id FROM companies WHERE code = ?", (code,))
-#     row = cursor.fetchone()
-#     if not row:
-#         await message.answer("❌ Неверный код компании. Попробуйте ещё раз или введите /start для повторного запроса.")
-#         return
-
-#     company_id = row[0]
-#     cursor.execute("INSERT OR REPLACE INTO user_company (user_id, company_id) VALUES (?, ?)",
-#                    (message.from_user.id, company_id))
-#     conn.commit()
-
-#     await message.answer("✅ Авторизация прошла успешно.", reply_markup=main_menu_kb())
-#     await state.clear()
 
 
 @router.message(F.text == "ℹ️ Инструкция")
@@ -184,17 +163,6 @@ async def yandex_link_handler(message: Message, state: FSMContext, bot: Bot):
     asyncio.create_task(check_task_and_send_result(bot, message.from_user.id, task.id))
 
 
-@router.message(F.text == "/admin_excel")
-async def admin_excel_handler(message: Message, bot: Bot):
-    if message.from_user.id not in ADMIN_IDS:
-        await message.answer("❌ У вас нет прав для этой команды.")
-        return
-
-    await message.answer("⏳ Генерируем файл администратора...")
-
-    task = generate_upload_and_get_links.delay()  # без параметров — генерируем админ-файл
-    asyncio.create_task(check_admin_excel_result(bot, message.from_user.id, task.id))
-
 async def check_admin_excel_result(bot: Bot, chat_id: int, task_id: str):
     for _ in range(20): 
         await asyncio.sleep(1)
@@ -232,8 +200,39 @@ async def check_task_and_send_result(bot, chat_id, task_id):
     await bot.send_message(chat_id, "Время ожидания истекло. Попробуйте позже.")
 
 
+@router.message(F.text == "/admin_excel")
+async def admin_excel_handler(message: Message):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("❌ У вас нет прав для этой команды.")
+        return
+
+    try:
+        weeks = list_admin_weeks()
+        if not weeks:
+            await message.answer("Нет доступных отчётов.")
+            return
+
+        kb = InlineKeyboardMarkup(
+            inline_keyboard=[
+                [InlineKeyboardButton(text=week, callback_data=f"admin_excel:{week}")]
+                for week in weeks
+            ]
+        )
+        await message.answer("📅 Выберите неделю для отчёта:", reply_markup=kb)
+
+    except Exception as e:
+        await message.answer("Ошибка при получении списка отчётов.")
+        print(f"[ADMIN EXCEL ERROR] {e}")
 
 
+# 🔹 Хендлер кнопки (колбэк)
+@router.callback_query(F.data.startswith("admin_excel:"))
+async def send_admin_excel_link(callback: CallbackQuery):
+    week = callback.data.split(":")[1]
+    path = f"admin/admin_orders_{week}.xlsx"
 
-
-
+    url = get_yadisk_public_url(path)
+    if url:
+        await callback.message.answer(f"📥 Отчёт за неделю {week}:\n{url}")
+    else:
+        await callback.message.answer("❌ Не удалось получить ссылку на файл.")

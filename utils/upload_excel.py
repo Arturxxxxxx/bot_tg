@@ -99,3 +99,47 @@ def generate_upload_and_get_links(
         raise
 
     return {"user_link": user_link, "admin_link": admin_link}
+
+
+# 🔹 Получение списка недель из папки admin/
+def list_admin_weeks() -> list[str]:
+    headers = {"Authorization": f"OAuth {TOKEN}"}
+    response = requests.get(
+        "https://cloud-api.yandex.net/v1/disk/resources",
+        headers=headers,
+        params={"path": "admin", "limit": 100}
+    )
+    response.raise_for_status()
+    items = response.json()["_embedded"]["items"]
+
+    weeks = []
+    for item in items:
+        name = item["name"]  # example: admin_orders_2025-W28.xlsx
+        if name.startswith("admin_orders_") and name.endswith(".xlsx"):
+            week = name.removeprefix("admin_orders_").removesuffix(".xlsx")
+            weeks.append(week)
+
+    return sorted(weeks, reverse=True)  # последние — сверху
+
+
+# 🔹 Получение публичной ссылки на файл
+def get_yadisk_public_url(path: str) -> str | None:
+    headers = {"Authorization": f"OAuth {TOKEN}"}
+
+    # Публикуем файл
+    requests.put(
+        "https://cloud-api.yandex.net/v1/disk/resources/publish",
+        params={"path": path},
+        headers=headers,
+    )
+
+    # Получаем ссылку
+    response = requests.get(
+        "https://cloud-api.yandex.net/v1/disk/resources",
+        params={"path": path},
+        headers=headers,
+    )
+
+    if response.status_code == 200:
+        return response.json().get("public_url")
+    return None
