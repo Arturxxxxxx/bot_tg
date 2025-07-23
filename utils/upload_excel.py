@@ -81,9 +81,16 @@ def generate_upload_and_get_links(
         # ─────────────────────  USER  ─────────────────────
         if user_id and company_name:
             user_file = generate_user_excel(user_id, company_name, monday)
+
+            # создаём подпапку users/<company-slug>
             safe = slugify(company_name or str(user_id))
-            user_remote = f"users/{safe}_{year}-W{week_num:02d}.xlsx"
+            company_folder = f"users/{safe}"
+            create_folder_if_not_exists(company_folder)
+
+            # путь к файлу внутри этой подпапки
+            user_remote = f"{company_folder}/{year}-W{week_num:02d}.xlsx"
             upload_file(user_file, user_remote)
+
             user_link = publish_file(user_remote)
             os.remove(user_file)
 

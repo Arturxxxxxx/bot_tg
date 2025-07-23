@@ -1,10 +1,12 @@
 import os
 import asyncio
+from asyncio import create_task, sleep
 from aiogram import types, F, Router, Bot
 from aiogram.types import Message, FSInputFile
 from aiogram.fsm.context import FSMContext
 from celery.result import AsyncResult
 from states.load_states import AuthCompanyStates
+from datetime import date, timedelta
 
 from keybords.main_kb import main_menu_kb
 from utils.upload_excel import generate_upload_and_get_links, list_admin_weeks, get_yadisk_public_url
@@ -20,7 +22,7 @@ ADMIN_IDS = [5469335222, 5459748606]
 #     chat_id = message.chat.id
 #     await message.reply(f"ID этого чата: {chat_id}")
 
-
+user_timeouts = {}
 
 @router.message(F.text == '/start')
 async def start_handler(message: Message, state: FSMContext):
@@ -30,6 +32,50 @@ async def start_handler(message: Message, state: FSMContext):
 
     await message.answer("Добро пожаловать! Пожалуйста, введите код вашей компании для авторизации:")
     await state.set_state(AuthCompanyStates.waiting_for_code)
+    # Запуск отсчета 20 секунд
+    user_id = message.from_user.id
+
+    async def timeout_check():
+        await sleep(20)
+        current_state = await state.get_state()
+        if current_state == AuthCompanyStates.waiting_for_code.state:
+            await message.answer("⏳ Вы не ввели код за 20 секунд.\nНажмите /start, чтобы начать заново.")
+            await state.clear()
+
+    # Сохраняем задачу таймера, чтобы можно было отменить при вводе
+    user_timeouts[user_id] = create_task(timeout_check())
+
+@router.message(AuthCompanyStates.waiting_for_code)
+async def process_company_code(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+
+    # Отменяем таймер
+    if user_id in user_timeouts:
+        user_timeouts[user_id].cancel()
+        user_timeouts.pop(user_id, None)
+
+    code = message.text.strip()
+    print(code)
+
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM companies WHERE code = ?", (code,))
+    row = cursor.fetchone()
+
+    if not row:
+        await message.answer("❌ Неверный код компании. Попробуйте снова:")
+        return
+
+    company_id = row[0]
+    cursor.execute(
+        "INSERT OR REPLACE INTO user_company (user_id, company_id) VALUES (?, ?)",
+        (message.from_user.id, company_id)
+    )
+    conn.commit()
+
+    await state.clear()
+    await message.answer("✅ Авторизация прошла успешно!", reply_markup=main_menu_kb())
+
+
 
 @router.message(F.text == "/cancel")
 async def cancel(msg: Message, state: FSMContext):
@@ -75,6 +121,25 @@ async def instruction_handler(message: Message):
     )
     await message.answer(text)
 
+@router.message(F.text == '/whoami')
+async def whoami_handler(message: Message):
+    user_id = message.from_user.id
+
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT companies.name, companies.code
+        FROM companies
+        JOIN user_company ON companies.id = user_company.company_id
+        WHERE user_company.user_id = ?
+    """, (user_id,))
+    row = cursor.fetchone()
+
+    if row:
+        company_name, company_code = row
+        await message.answer(f"{company_name} {company_code}")
+    else:
+        await message.answer("❌ Вы не авторизованы в компании.\nНажмите /auth для авторизации.")
+
 
 #admin
 @router.message(F.text.startswith('/create_company'))
@@ -103,19 +168,20 @@ async def create_company_handler(message: Message):
     await message.answer(f"✅ Компания '{name}' с кодом '{code}' успешно создана.")
 
 
-# 📋 Получить список компаний
+# 📋 Получить список компаний с кодами
 @router.message(F.text.startswith("/companies"))
 async def list_companies(message: types.Message):
     cursor = conn.cursor()
-    cursor.execute("SELECT DISTINCT name FROM companies ORDER BY name")
-    companies = [row[0] for row in cursor.fetchall()]
+    cursor.execute("SELECT name, code FROM companies ORDER BY name")
+    rows = cursor.fetchall()
     
-    if not companies:
+    if not rows:
         await message.answer("❌ Нет зарегистрированных компаний.")
         return
 
-    companies_list = "\n".join(f"• {c}" for c in companies)
+    companies_list = "\n".join(f"• {name} — {code}" for name, code in rows)
     await message.answer(f"📦 Список компаний:\n\n{companies_list}")
+
 
 # ❌ Удалить компанию
 @router.message(F.text.startswith("/delete_company"))
@@ -142,25 +208,89 @@ async def delete_company(message: types.Message):
 
 
 @router.message(F.text == "🔗 Ссылка на Я.Диск")
-async def yandex_link_handler(message: Message, state: FSMContext, bot: Bot):
-    # Получаем компанию пользователя из базы
+async def user_excel_menu(message: Message):
     cursor = conn.cursor()
-    cursor.execute("SELECT name FROM companies "
-                   "JOIN user_company ON companies.id = user_company.company_id "
-                   "WHERE user_company.user_id = ?", (message.from_user.id,))
+    cursor.execute("""
+        SELECT name FROM companies
+        JOIN user_company ON companies.id = user_company.company_id
+        WHERE user_company.user_id = ?
+    """, (message.from_user.id,))
+    
     row = cursor.fetchone()
     if not row:
         await message.answer("❌ Вы не авторизованы. Введите код компании через /auth <код>.")
         return
 
-    company_name = row[0]
-    await message.answer("⏳ Генерация файла и загрузка на Яндекс.Диск...")
+    today = date.today()
+    current_week = today.isocalendar()
+    current_week_name = f"{today.year}-W{current_week[1]:02d}"
 
-    task = generate_upload_and_get_links.delay(
-        user_id=message.from_user.id,
-        company_name=company_name
+    next_week = (today + timedelta(weeks=1)).isocalendar()
+    next_week_name = f"{today.year}-W{next_week[1]:02d}"
+
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=f"📅 Текущая неделя ({current_week_name})", callback_data=f"user_excel:{current_week_name}")],
+            [InlineKeyboardButton(text=f"📅 Следующая неделя ({next_week_name})", callback_data=f"user_excel:{next_week_name}")],
+            [InlineKeyboardButton(text="📁 Общая папка", callback_data="user_excel:common")]
+        ]
     )
-    asyncio.create_task(check_task_and_send_result(bot, message.from_user.id, task.id))
+
+    await message.answer("Выберите отчёт, который хотите получить:", reply_markup=kb)
+
+@router.callback_query(F.data.startswith("user_excel:"))
+async def handle_user_excel_callback(callback_query: CallbackQuery):
+    await callback_query.answer()
+
+    folder_key = callback_query.data.split(":")[1]
+
+    # Получаем компанию пользователя
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT name FROM companies
+        JOIN user_company ON companies.id = user_company.company_id
+        WHERE user_company.user_id = ?
+    """, (callback_query.from_user.id,))
+    row = cursor.fetchone()
+
+    if not row:
+        await callback_query.message.answer("❌ Вы не авторизованы.")
+        return
+
+    company_name = row[0]  # например: "tesla_shop"
+
+    # Определяем путь
+    if folder_key == "common":
+        path = f"/users/{company_name}"
+    else:
+        path = f"/users/{company_name}/orders_{folder_key}.xlsx"
+
+    public_url = get_yadisk_public_url(path)
+
+    if public_url:
+        await callback_query.message.answer(f"📂 Ваша ссылка:\n{public_url}")
+    else:
+        await callback_query.message.answer("❌ Не удалось получить ссылку.")
+
+# async def yandex_link_handler(message: Message, state: FSMContext, bot: Bot):
+#     # Получаем компанию пользователя из базы
+#     cursor = conn.cursor()
+#     cursor.execute("SELECT name FROM companies "
+#                    "JOIN user_company ON companies.id = user_company.company_id "
+#                    "WHERE user_company.user_id = ?", (message.from_user.id,))
+#     row = cursor.fetchone()
+#     if not row:
+#         await message.answer("❌ Вы не авторизованы. Введите код компании через /auth <код>.")
+#         return
+
+#     company_name = row[0]
+#     await message.answer("⏳ Генерация файла и загрузка на Яндекс.Диск...")
+
+#     task = generate_upload_and_get_links.delay(
+#         user_id=message.from_user.id,
+#         company_name=company_name
+#     )
+#     asyncio.create_task(check_task_and_send_result(bot, message.from_user.id, task.id))
 
 
 async def check_admin_excel_result(bot: Bot, chat_id: int, task_id: str):
@@ -200,6 +330,30 @@ async def check_task_and_send_result(bot, chat_id, task_id):
     await bot.send_message(chat_id, "Время ожидания истекло. Попробуйте позже.")
 
 
+# @router.message(F.text == "/admin_excel")
+# async def admin_excel_handler(message: Message):
+#     if message.from_user.id not in ADMIN_IDS:
+#         await message.answer("❌ У вас нет прав для этой команды.")
+#         return
+
+#     try:
+#         weeks = list_admin_weeks()
+#         if not weeks:
+#             await message.answer("Нет доступных отчётов.")
+#             return
+
+#         kb = InlineKeyboardMarkup(
+#             inline_keyboard=[
+#                 [InlineKeyboardButton(text=week, callback_data=f"admin_excel:{week}")]
+#                 for week in weeks
+#             ]
+#         )
+#         await message.answer("📅 Выберите неделю для отчёта:", reply_markup=kb)
+
+#     except Exception as e:
+#         await message.answer("Ошибка при получении списка отчётов.")
+#         print(f"[ADMIN EXCEL ERROR] {e}")
+
 @router.message(F.text == "/admin_excel")
 async def admin_excel_handler(message: Message):
     if message.from_user.id not in ADMIN_IDS:
@@ -207,32 +361,76 @@ async def admin_excel_handler(message: Message):
         return
 
     try:
-        weeks = list_admin_weeks()
-        if not weeks:
-            await message.answer("Нет доступных отчётов.")
-            return
+        today = date.today()
+        current_week = today.isocalendar()
+        current_week_name = f"{today.year}-W{current_week[1]:02d}"
+
+        next_week_date = today + timedelta(weeks=1)
+        next_week = next_week_date.isocalendar()
+        next_week_name = f"{next_week_date.year}-W{next_week[1]:02d}"
 
         kb = InlineKeyboardMarkup(
             inline_keyboard=[
-                [InlineKeyboardButton(text=week, callback_data=f"admin_excel:{week}")]
-                for week in weeks
+                [InlineKeyboardButton(text=f"📅 Текущая неделя ({current_week_name})", callback_data=f"admin_excel:{current_week_name}")],
+                [InlineKeyboardButton(text=f"📅 Следующая неделя ({next_week_name})", callback_data=f"admin_excel:{next_week_name}")],
+                [InlineKeyboardButton(text="📁 Общая папка", callback_data="admin_excel:common")]
             ]
         )
-        await message.answer("📅 Выберите неделю для отчёта:", reply_markup=kb)
+        await message.answer("Выберите папку для отчёта 📊:", reply_markup=kb)
 
     except Exception as e:
-        await message.answer("Ошибка при получении списка отчётов.")
+        await message.answer("Ошибка при формировании меню.")
         print(f"[ADMIN EXCEL ERROR] {e}")
 
-
-# 🔹 Хендлер кнопки (колбэк)
 @router.callback_query(F.data.startswith("admin_excel:"))
-async def send_admin_excel_link(callback: CallbackQuery):
-    week = callback.data.split(":")[1]
-    path = f"admin/admin_orders_{week}.xlsx"
+async def handle_admin_excel_callback(callback_query: CallbackQuery):
+    await callback_query.answer()
 
-    url = get_yadisk_public_url(path)
-    if url:
-        await callback.message.answer(f"📥 Отчёт за неделю {week}:\n{url}")
+    folder_key = callback_query.data.split(":")[1]
+
+    # Обработка кнопок
+    if folder_key == "common":
+        folder_path = "/admin"
     else:
-        await callback.message.answer("❌ Не удалось получить ссылку на файл.")
+        # Проверка на валидный формат недели: YYYY-Www
+        import re
+        if re.match(r"\d{4}-W\d{2}", folder_key):
+            folder_path = f"/admin/admin_orders_{folder_key}.xlsx"
+        else:
+            await callback_query.message.answer("❌ Неверная папка.")
+            return
+
+    public_url = get_yadisk_public_url(folder_path)
+
+    if public_url:
+        await callback_query.message.answer(f"📂 Ссылка на папку: {public_url}")
+    else:
+        await callback_query.message.answer("❌ Не удалось получить ссылку.")
+
+
+
+from datetime import date, timedelta
+
+def get_week_folder(offset=0):
+    today = date.today() + timedelta(weeks=offset)
+    year, week, _ = today.isocalendar()
+    return f"{year}-W{week:02d}"
+
+def get_current_week_folder():
+    return get_week_folder(0)
+
+def get_next_week_folder():
+    return get_week_folder(1)
+
+
+# # 🔹 Хендлер кнопки (колбэк)
+# @router.callback_query(F.data.startswith("admin_excel:"))
+# async def send_admin_excel_link(callback: CallbackQuery):
+#     week = callback.data.split(":")[1]
+#     path = f"admin/admin_orders_{week}.xlsx"
+
+#     url = get_yadisk_public_url(path)
+#     if url:
+#         await callback.message.answer(f"📥 Отчёт за неделю {week}:\n{url}")
+#     else:
+#         await callback.message.answer("❌ Не удалось получить ссылку на файл.")
