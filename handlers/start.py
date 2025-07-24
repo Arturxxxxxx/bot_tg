@@ -263,9 +263,10 @@ async def handle_user_excel_callback(callback_query: CallbackQuery):
     if folder_key == "common":
         path = f"/users/{company_name}"
     else:
-        path = f"/users/{company_name}/orders_{folder_key}.xlsx"
+        path = f"/users/{company_name}/{folder_key}.xlsx"
 
     public_url = get_yadisk_public_url(path)
+    print(path)
 
     if public_url:
         await callback_query.message.answer(f"📂 Ваша ссылка:\n{public_url}")
