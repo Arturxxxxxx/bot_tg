@@ -130,23 +130,31 @@ def list_admin_weeks() -> list[str]:
 
 
 # 🔹 Получение публичной ссылки на файл
+import urllib.parse
+
+
 def get_yadisk_public_url(path: str) -> str | None:
     headers = {"Authorization": f"OAuth {TOKEN}"}
 
-    # Публикуем файл
+    # Процентное кодирование пути (поддержка кириллицы)
+    encoded_path = urllib.parse.quote(path)
+
+    # Публикуем файл/папку
     requests.put(
         "https://cloud-api.yandex.net/v1/disk/resources/publish",
-        params={"path": path},
+        params={"path": encoded_path},
         headers=headers,
     )
 
     # Получаем ссылку
     response = requests.get(
         "https://cloud-api.yandex.net/v1/disk/resources",
-        params={"path": path},
+        params={"path": encoded_path},
         headers=headers,
     )
 
     if response.status_code == 200:
         return response.json().get("public_url")
+    
+    print("Ошибка:", response.status_code, response.text)
     return None
