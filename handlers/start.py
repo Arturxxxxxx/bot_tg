@@ -194,16 +194,29 @@ async def delete_company(message: types.Message):
     company_name = parts[1]
 
     cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM companies WHERE name = ?", (company_name,))
-    count = cursor.fetchone()[0]
+    
+    # Проверка: существует ли компания
+    cursor.execute("SELECT id FROM companies WHERE name = ?", (company_name,))
+    company = cursor.fetchone()
 
-    if count == 0:
+    if not company:
         await message.answer(f"❌ Компания с названием `{company_name}` не найдена.", parse_mode="Markdown")
         return
 
-    cursor.execute("DELETE FROM companies WHERE name = ?", (company_name,))
+    company_id = company[0]
+
+    # Удаление связанных данных
+    # (если такие таблицы есть у тебя в проекте)
+    cursor.execute("DELETE FROM folders WHERE company_id = ?", (company_id,))
+    cursor.execute("DELETE FROM users WHERE company_id = ?", (company_id,))
+    cursor.execute("DELETE FROM applications WHERE company_id = ?", (company_id,))
+    
+    # Удаление самой компании
+    cursor.execute("DELETE FROM companies WHERE id = ?", (company_id,))
     conn.commit()
-    await message.answer(f"✅ Компания `{company_name}` и её {count} заявок удалены.", parse_mode="Markdown")
+
+    await message.answer(f"✅ Компания `{company_name}` и связанные с ней данные успешно удалены.", parse_mode="Markdown")
+
 
 
 
