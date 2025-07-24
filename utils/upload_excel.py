@@ -9,7 +9,7 @@ from datetime import date, timedelta, datetime
 load_dotenv()
 
 TOKEN = os.getenv("YANDEX_TOK")
-print(TOKEN)
+# print(TOKEN)
 HEADERS = {"Authorization": f"OAuth {TOKEN}"}
 
 def create_folder_if_not_exists(folder_path: str):
@@ -130,31 +130,33 @@ def list_admin_weeks() -> list[str]:
 
 
 # 🔹 Получение публичной ссылки на файл
-import urllib.parse
 
+
+
+from slugify import slugify
 
 def get_yadisk_public_url(path: str) -> str | None:
     headers = {"Authorization": f"OAuth {TOKEN}"}
 
-    # Процентное кодирование пути (поддержка кириллицы)
-    encoded_path = urllib.parse.quote(path)
-
     # Публикуем файл/папку
-    requests.put(
+    publish_response = requests.put(
         "https://cloud-api.yandex.net/v1/disk/resources/publish",
-        params={"path": encoded_path},
+        params={"path": path},
         headers=headers,
     )
+
+    if publish_response.status_code != 200:
+        print("Ошибка публикации:", publish_response.status_code, publish_response.text)
 
     # Получаем ссылку
     response = requests.get(
         "https://cloud-api.yandex.net/v1/disk/resources",
-        params={"path": encoded_path},
+        params={"path": path},
         headers=headers,
     )
 
     if response.status_code == 200:
         return response.json().get("public_url")
     
-    print("Ошибка:", response.status_code, response.text)
+    print("Ошибка при получении ссылки:", response.status_code, response.text)
     return None

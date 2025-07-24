@@ -7,6 +7,7 @@ from aiogram.fsm.context import FSMContext
 from celery.result import AsyncResult
 from states.load_states import AuthCompanyStates
 from datetime import date, timedelta
+import requests
 
 from keybords.main_kb import main_menu_kb
 from utils.upload_excel import generate_upload_and_get_links, list_admin_weeks, get_yadisk_public_url
@@ -251,6 +252,8 @@ async def user_excel_menu(message: Message):
 
     await message.answer("Выберите отчёт, который хотите получить:", reply_markup=kb)
 
+from slugify import slugify
+
 @router.callback_query(F.data.startswith("user_excel:"))
 async def handle_user_excel_callback(callback_query: CallbackQuery):
     await callback_query.answer()
@@ -272,14 +275,18 @@ async def handle_user_excel_callback(callback_query: CallbackQuery):
 
     company_name = row[0]  # например: "tesla_shop"
 
-    # Определяем путь
+    # ✅ Приводим путь к безопасному виду
+    safe_company = slugify(company_name)
+
     if folder_key == "common":
-        path = f"/users/{company_name}"
+        company_slug = slugify(company_name)  # Только для компании, если там кириллица
+        path = f"/users/{company_slug}"
     else:
-        path = f"/users/{company_name}/{folder_key}.xlsx"
+        path = f"/users/{slugify(company_name)}/{folder_key}.xlsx" 
+
+    print("Slugified путь:", path)
 
     public_url = get_yadisk_public_url(path)
-    print(path)
 
     if public_url:
         await callback_query.message.answer(f"📂 Ваша ссылка:\n{public_url}")
