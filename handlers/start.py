@@ -193,7 +193,6 @@ async def delete_company(message: types.Message):
         return
 
     company_name = parts[1]
-
     cursor = conn.cursor()
     
     # Проверка: существует ли компания
@@ -207,17 +206,14 @@ async def delete_company(message: types.Message):
     company_id = company[0]
 
     # Удаление связанных данных
-    # (если такие таблицы есть у тебя в проекте)
-    cursor.execute("DELETE FROM folders WHERE company_id = ?", (company_id,))
-    cursor.execute("DELETE FROM users WHERE company_id = ?", (company_id,))
-    cursor.execute("DELETE FROM applications WHERE company_id = ?", (company_id,))
-    
+    cursor.execute("DELETE FROM portions WHERE company_name = ?", (company_name,))
+    cursor.execute("DELETE FROM user_company WHERE company_id = ?", (company_id,))
+
     # Удаление самой компании
     cursor.execute("DELETE FROM companies WHERE id = ?", (company_id,))
     conn.commit()
 
     await message.answer(f"✅ Компания `{company_name}` и связанные с ней данные успешно удалены.", parse_mode="Markdown")
-
 
 
 
