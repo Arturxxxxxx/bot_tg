@@ -2,6 +2,8 @@ from aiogram.fsm.state import StatesGroup, State
 
 class AuthCompanyStates(StatesGroup):
     waiting_for_code = State()
+    waiting_for_company_selection = State()
+    waiting_for_new_password = State()
 
 class LoadDataStates(StatesGroup):
     choosing_time = State()

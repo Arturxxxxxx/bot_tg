@@ -5,7 +5,9 @@ from slugify import slugify
 import os
 from dotenv import load_dotenv
 from datetime import date, timedelta, datetime
-
+from pathlib import Path
+import calendar
+from utils.month_export import generate_monthly_report
 load_dotenv()
 
 TOKEN = os.getenv("YANDEX_TOK")
@@ -160,3 +162,32 @@ def get_yadisk_public_url(path: str) -> str | None:
     
     print("Ошибка при получении ссылки:", response.status_code, response.text)
     return None
+
+
+
+@celery.task
+def export_monthly_admin_excel_task():
+    now = datetime.now()
+    last_day = calendar.monthrange(now.year, now.month)[1]
+
+    if now.day != last_day:
+        return "Сегодня не последний день месяца — выгрузка не выполнена."
+
+    # Генерация файла, вернёт путь вроде: "exports/monthly_report_2025-08.xlsx"
+    generated_path = Path(generate_monthly_report())
+    
+    # Финальное имя на Яндекс.Диске: "2025-08.xlsx"
+    yandex_filename = f"{now.year}-{now.month:02d}.xlsx"
+    
+    remote_folder = "disk:/admin/monthly_totals"
+    create_folder_if_not_exists(remote_folder)
+
+    remote_path = f"{remote_folder}/{yandex_filename}"
+    
+    upload_file(str(generated_path), remote_path)
+    public_url = publish_file(remote_path)
+
+    return {
+        "uploaded_to": remote_path,
+        "public_url": public_url,
+    }

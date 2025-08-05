@@ -74,7 +74,7 @@ async def start_load_data(message: Message, state: FSMContext):
 
 @router.message(LoadDataStates.choosing_time)
 async def choose_time(message: Message, state: FSMContext):
-    if message.text not in ["Запайка", "День", "Ночь", BACK_BUTTON]:  # замените на ваши кнопки
+    if message.text not in ["Выпечка", "День", "Ночь", BACK_BUTTON]:  # замените на ваши кнопки
         await message.answer("Пожалуйста, выберите время суток, используя кнопки ниже.")
         return
 

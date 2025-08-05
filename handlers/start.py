@@ -2,29 +2,84 @@ import os
 import asyncio
 from asyncio import create_task, sleep
 from aiogram import types, F, Router, Bot
-from aiogram.types import Message, FSInputFile
+from aiogram.types import Message, FSInputFile, BotCommand, BotCommandScopeChat, BotCommandScopeDefault, KeyboardButton, ReplyKeyboardMarkup
 from aiogram.fsm.context import FSMContext
 from celery.result import AsyncResult
 from states.load_states import AuthCompanyStates
 from datetime import date, timedelta
 import requests
+from aiogram.filters import Command
 
 from keybords.main_kb import main_menu_kb
 from utils.upload_excel import generate_upload_and_get_links, list_admin_weeks, get_yadisk_public_url
 from data.database import conn
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+import hashlib
 router = Router()
 
 ADMIN_IDS = [5469335222, 5459748606]
- 
+OLD_ADMIN_IDS= []
+
+
+@router.message(Command("chatid"))
+async def get_chat_id(message: Message):
+    await message.answer(f"Chat ID: {message.chat.id}")
+
+
+from utils.upload_excel import export_monthly_admin_excel_task
+export_monthly_admin_excel_task.delay()
 
 # @router.message()
 # async def get_chat_id(message: types.Message):
 #     chat_id = message.chat.id
 #     await message.reply(f"ID этого чата: {chat_id}")
 
+#список команд
+user_commands = [
+    BotCommand(command='auth', description='Команда для регистрации в компании'),
+    BotCommand(command='start', description='Запуск'),
+    BotCommand(command='cancel', description='Отмена'),
+    BotCommand(command='whoami', description='Информации о компании')
+]
+
+admin_commands = [
+    BotCommand(command='admins', description='Команда для список админов'),
+    BotCommand(command='admin_excel', description='ссылка на таблицу'),
+    BotCommand(command='companies', description='Команда список компании'),
+    BotCommand(command='create_company', description='Команда для создание компани'),
+    BotCommand(command='delete_company', description='Команда для удаление компании')
+]
+
+
+async def set_commands(bot: Bot):
+    # Устанавливаем команды по умолчанию для всех
+    await bot.set_my_commands(user_commands, scope=BotCommandScopeDefault())
+
+    # Устанавливаем команды для действующих админов
+    for admin_id in ADMIN_IDS:
+        await bot.set_my_commands(user_commands + admin_commands, scope=BotCommandScopeChat(chat_id=admin_id))
+
+    # Сбрасываем команды у бывших админов
+    for old_admin in OLD_ADMIN_IDS:
+        if old_admin not in ADMIN_IDS:
+            await bot.set_my_commands(user_commands, scope=BotCommandScopeChat(chat_id=old_admin))
+
+
+# получение username админов
+async def username(bot: Bot, user_ids: list[int]) -> dict[int, str | None]:
+    usernames = {}
+    for user_id in user_ids:
+        try:
+            user = await bot.get_chat(user_id)
+            usernames[user_id] = user.username
+        except Exception as e:
+            print('не получилось получить username')
+            usernames[user_id] = None
+    return usernames
+
 user_timeouts = {}
 
+#start
 @router.message(F.text == '/start')
 async def start_handler(message: Message, state: FSMContext):
     if message.from_user.id in ADMIN_IDS:
@@ -75,6 +130,22 @@ async def process_company_code(message: Message, state: FSMContext):
 
     await state.clear()
     await message.answer("✅ Авторизация прошла успешно!", reply_markup=main_menu_kb())
+
+
+@router.message(F.text == '/admins')
+async def admins(message: Message, bot: Bot):
+    user_ids = ADMIN_IDS
+    nickname_dict = await username(bot, user_ids)
+
+    text_lines = ["Админы:"]
+    for user_id, nickname in nickname_dict.items():
+        if nickname:
+            text_lines.append(f"• @{nickname}")
+        else:
+            text_lines.append(f"• ❌ Не удалось получить никнейм (id: {user_id})")
+
+    text = "\n".join(text_lines)
+    await message.answer(text)
 
 
 
@@ -143,6 +214,65 @@ async def whoami_handler(message: Message):
 
 
 #admin
+@router.message(F.text.startswith("/change_company_password"))
+async def change_company_password_start(message: Message, state: FSMContext):
+    if message.from_user.id not in ADMIN_IDS:
+        await message.answer("🚫 У вас нет прав для изменения пароля компании.")
+        return
+
+    cursor = conn.cursor()
+    cursor.execute("SELECT name, code FROM companies")
+    companies = cursor.fetchall()
+
+    if not companies:
+        await message.answer("❌ Нет зарегистрированных компаний.")
+        return
+
+    kb = [[KeyboardButton(text=f"{name} — {code}")] for name, code in companies]
+    markup = ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True)
+
+    await message.answer("📋 Выберите компанию для смены пароля:", reply_markup=markup)
+    await state.set_state(AuthCompanyStates.waiting_for_company_selection)
+
+
+@router.message(AuthCompanyStates.waiting_for_company_selection)
+async def receive_company_selection(message: Message, state: FSMContext):
+    selected = message.text
+    if " — " not in selected:
+        await message.answer("❌ Неверный формат. Пожалуйста, выберите компанию из списка.")
+        return
+
+    name, code = selected.split(" — ")
+    cursor = conn.cursor()
+    cursor.execute("SELECT id FROM companies WHERE code = ?", (code.strip(),))
+    result = cursor.fetchone()
+
+    if not result:
+        await message.answer("❌ Компания не найдена.")
+        return
+
+    await state.update_data(company_id=result[0])
+    await message.answer("✏️ Введите новый пароль:", reply_markup=types.ReplyKeyboardRemove())
+    await state.set_state(AuthCompanyStates.waiting_for_new_password)
+
+
+@router.message(AuthCompanyStates.waiting_for_new_password)
+async def receive_new_password(message: Message, state: FSMContext):
+    data = await state.get_data()
+    company_id = data["company_id"]
+    new_password = message.text.strip()
+
+    if len(new_password) < 4:
+        await message.answer("❗ Пароль должен быть не менее 4 символов.")
+        return
+
+    cursor = conn.cursor()
+    cursor.execute("UPDATE companies SET code = ? WHERE id = ?", (new_password, company_id))
+    conn.commit()
+
+    await message.answer("✅ Пароль компании успешно обновлён.")
+    await state.clear()
+
 @router.message(F.text.startswith('/create_company'))
 async def create_company_handler(message: Message):
     if message.from_user.id not in ADMIN_IDS:
