@@ -186,6 +186,7 @@ def export_monthly_admin_excel_task():
     
     upload_file(str(generated_path), remote_path)
     public_url = publish_file(remote_path)
+    os.remove(generated_path)
 
     return {
         "uploaded_to": remote_path,
